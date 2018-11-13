@@ -10,10 +10,10 @@ conf = {
     'mu': 100,  # sale mean
     'sigma': 100,  # sale standard deviation
     'days': 365,  # total number of sale days
-    # parameters
-    'dio': 15,  # days inventory outstanding
-    'lt': 30,  # lead time
+    # objective
+    'opp': 15,  # objective purchasing period
     # constraints
+    'lt': 30,  # lead time
     'moq': 0,  # minimal order quantity
     'mpf': 7,  # minimal purchase frequency
     'sc': 5000,  # stock capacity

@@ -25,11 +25,11 @@ class Instance(object):
     def __init__(self, conf):
         self.conf = conf
         self.sale = generate_sale_data(self.conf['mu'], self.conf['sigma'], self.conf['days'])
+        self.sale_real = [0] * self.conf['days']
         self.stock = [0] * self.conf['days']
         self.stock_cache = {}
         self.order_history = [0] * self.conf['days']
         self.order_count = 0
-        self.T = self.conf['dio']  # sale period
         self.stockout_days = 0
         self.stockfull_days = 0
         self.alpha = self.__calculate_service_level()
@@ -60,16 +60,19 @@ class Instance(object):
     def __out_stock(self, day):
         s = self.__get_stock(day) - self.__get_sale(day)
         if s < 0:
+            self.sale_real[day] = self.__get_stock(day)
             s = 0
             if day >= self.conf['lt']:
                 self.stockout_days += 1
+        else:
+            self.sale_real[day] = self.__get_sale(day)
         if day < self.conf['days'] - 1:
             self.stock[day+1] = s
 
     def __calculate_service_level(self):
         try:
-            cu = self.conf['price'] - self.conf['cost'] - (self.T + 1)/2
-            co = self.conf['inv_cost'] * self.T
+            cu = self.conf['price'] - self.conf['cost'] - (self.conf['opp'] + 1)/2
+            co = self.conf['inv_cost'] * self.conf['opp']
             critical_ratio = cu/(cu+co)
             if critical_ratio < self.conf['msl']:
                 return self.conf['msl']
@@ -83,28 +86,31 @@ class Instance(object):
         # satisfy minimal purchase frequency
         if day < self.conf['mpf'] or sum(self.order_history[day-self.conf['mpf']+1: day]) > 0:
             return 0
-        # calculate demand of one period
-        z = ss.norm.ppf(self.alpha)
-        d = self.T * self.conf['mu'] + np.sqrt(self.T) * self.conf['sigma'] * z
-        # do not exceed stock capacity with a probability equal to "safety level"
+        # calculate demand of one LT under service level "beta"
+        beta = np.sqrt(self.alpha)
+        z = ss.norm.ppf(beta)
+        d0 = self.conf['lt'] * self.conf['mu'] + np.sqrt(self.conf['lt']) * self.conf['sigma'] * z
+        # do not exceed stock capacity, with probability equal to "safety level"
         if 'sfl' in self.conf.keys():
             d_max = self.__calculate_max_demand(day)
-            if d > d_max:
-                d = d_max
-        # calculate the total demand in one period (including the incoming stock)
+            if d0 > d_max:
+                d0 = d_max
+        # calculate the total demand in one LT (including the incoming stock)
         s = self.__get_stock(day)
         for key in self.stock_cache:
-            if day < key <= day + self.T:
+            if day < key <= day + self.conf['lt']:
                 s += self.stock_cache[key]
-        # calculate the stock on day+LT under the current service level alpha
-        s1 = max(s - d, 0)
-        # calculate the theoretical order quantity for the whole DIO.
-        q = max(d - s1, 0)
+        # calculate the stock on day+LT under the current service level "beta"
+        s1 = max(s - d0, 0)
+        # calculate demand of one period (under service level beta)
+        d1 = self.conf['opp'] * self.conf['mu'] + np.sqrt(self.conf['opp']) * self.conf['sigma'] * z
+        # calculate the theoretical order quantity for the whole period.
+        q = max(d1 - s1, 0)
         # satisfy MOQ
         if q < self.conf['moq']:
             return 0
         # spread the quantity over and make sure that q >= MOQ
-        q = q / np.ceil(self.T / self.conf['mpf'])
+        q = q / np.ceil(self.conf['opp'] / self.conf['mpf'])
         if q < self.conf['moq']:
             return self.conf['moq']
 
@@ -114,11 +120,11 @@ class Instance(object):
         # calculate the total demand in one period (including the incoming stock)
         s = self.__get_stock(day)
         for key in self.stock_cache:
-            if day < key <= day + self.T:
+            if day < key <= day + self.conf['opp']:
                 s += self.stock_cache[key]
         # calculate the max demand of one period
         z = ss.norm.ppf(1-self.conf['sfl'])
-        d = self.T * self.conf['mu'] + self.conf['sc'] - s + np.sqrt(self.T) * self.conf['sigma'] * z
+        d = self.conf['opp'] * self.conf['mu'] + self.conf['sc'] - s + np.sqrt(self.conf['opp']) * self.conf['sigma'] * z
         return max(d, 0)
 
     def run(self):
@@ -141,7 +147,7 @@ class Instance(object):
         stock_stdev = statistics.stdev(self.stock)
         print('average stock: %d -- standard deviation: %d' % (stock_mean, stock_stdev))
         sale_mean = statistics.mean(self.sale)
-        print('average DIO: %.2f -- objective DIO: %d' % (stock_mean/sale_mean, self.conf['dio']))
+        print('average DIO: %.2f -- OPP: %d' % (stock_mean/sale_mean, self.conf['opp']))
         print('purchase frequency (PF): %.2f -- minimal PF: %d' % (self.conf['days']/self.order_count, self.conf['mpf']))
         # news vendor model
         if 'price' not in self.conf.keys():
@@ -150,8 +156,8 @@ class Instance(object):
 
     def __evaluate_profit(self):
         inv_cost = sum(self.stock) * self.conf['inv_cost']
-        gmv = sum(self.sale) * self.conf['price']
-        cost = sum(self.sale) * self.conf['cost']
+        gmv = sum(self.sale_real) * self.conf['price']
+        cost = sum(self.sale_real) * self.conf['cost']
         profit = gmv - cost - inv_cost
         print("==== Profit Analysis ====")
         print("GMV: %d" % gmv)
